@@ -65,7 +65,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: nkp-source
-        run: npm ci
+        run: npm install
 
       - name: Initialize MySQL
         working-directory: nkp-source
