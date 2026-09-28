@@ -128,8 +128,24 @@ jobs:
             exit 1
           fi
 
-          curl -fsS "$URL/login" >/dev/null
           printf '%s\n' "$URL" > /tmp/nkp-preview-url.txt
+
+          READY=0
+          for i in {1..45}; do
+            if curl -fsS --connect-timeout 5 --max-time 10 "$URL/login" >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null; then
+              cat /tmp/cloudflared.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "Cloudflare URL created; DNS/HTTP not ready yet, keeping tunnel alive: $URL"
+          fi
 
           echo "NKP_ADMIN_URL=$URL"
           echo "LOGIN=admin / 1234"
