@@ -1,0 +1,181 @@
+name: NKP V2 Public Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nkp-public-preview.yml'
+      - 'restart.txt'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nkp-v2-public-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ''
+      DB_NAME: nkp_v2
+      DB_REQUIRED: '1'
+      DB_SEED_ROWS: '100'
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: nkp_v2
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout action control repo
+        uses: actions/checkout@v4
+        with:
+          path: action-control
+
+      - name: Checkout private NKP source to temporary runner
+        uses: actions/checkout@v4
+        with:
+          repository: shg2342/nkp-v2
+          ref: main
+          token: ${{ secrets.SOURCE_REPO_TOKEN || secrets.NKP_TOKEN || secrets.TOKEN || secrets.GH_PAT || secrets.PAT }}
+          path: nkp-source
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: nkp-source/package-lock.json
+
+      - name: Install dependencies
+        working-directory: nkp-source
+        run: npm ci
+
+      - name: Initialize MySQL
+        working-directory: nkp-source
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if mysqladmin --protocol=TCP -h127.0.0.1 -uroot ping --silent; then
+              break
+            fi
+            sleep 2
+          done
+          mysql --protocol=TCP -h127.0.0.1 -uroot < database/schema.sql
+          mysql --protocol=TCP -h127.0.0.1 -uroot nkp_v2 < database/seed.sql
+          mysql --protocol=TCP -h127.0.0.1 -uroot nkp_v2 < database/seed_relational.sql
+
+      - name: Start NKP V2
+        working-directory: nkp-source
+        shell: bash
+        run: |
+          nohup env NODE_ENV=development PORT=3000 npm run dev > /tmp/nkp-v2.log 2>&1 &
+          echo $! > /tmp/nkp-v2.pid
+          for i in {1..90}; do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "NKP V2 ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/nkp-v2.log
+          exit 1
+
+      - name: Install cloudflared
+        shell: bash
+        run: |
+          sudo curl -L --fail --retry 3 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+
+      - name: Start Cloudflare tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:3000 > /tmp/cloudflared.log 2>&1 &
+          echo $! > /tmp/cloudflared.pid
+
+          URL=""
+          for i in {1..60}; do
+            URL=$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)
+            if [ -n "$URL" ]; then break; fi
+            if ! kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null; then
+              cat /tmp/cloudflared.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ -z "$URL" ]; then
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+          curl -fsS "$URL/login" >/dev/null
+          printf '%s\n' "$URL" > /tmp/nkp-preview-url.txt
+
+          echo "NKP_ADMIN_URL=$URL"
+          echo "LOGIN=admin / 1234"
+          {
+            echo "## NKP V2 Admin Preview"
+            echo ""
+            echo "**Admin URL:** $URL"
+            echo ""
+            echo "**Login:** admin / 1234"
+            echo ""
+            echo "Source: shg2342/nkp-v2 (temporary runner checkout only)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish URL only
+        working-directory: action-control
+        shell: bash
+        run: |
+          URL=$(cat /tmp/nkp-preview-url.txt)
+          printf '%s\n' "$URL" > preview-url.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add preview-url.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: publish preview URL [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload URL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nkp-preview-url
+          path: /tmp/nkp-preview-url.txt
+          retention-days: 1
+
+      - name: Keep preview alive
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL=$(cat /tmp/nkp-preview-url.txt)
+          CF_PID=$(cat /tmp/cloudflared.pid)
+          APP_PID=$(cat /tmp/nkp-v2.pid)
+          echo "NKP V2 ADMIN: $URL"
+          while kill -0 "$CF_PID" 2>/dev/null && kill -0 "$APP_PID" 2>/dev/null; do
+            sleep 30
+          done
+          tail -n 100 /tmp/nkp-v2.log || true
+          tail -n 100 /tmp/cloudflared.log || true
+          exit 1
