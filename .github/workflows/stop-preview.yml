@@ -1,0 +1,26 @@
+name: Stop NKP Preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stop-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel preview runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          for RUN_ID in 36402258295 36403518456; do
+            echo "Cancelling run $RUN_ID"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/cancel" || true
+          done
