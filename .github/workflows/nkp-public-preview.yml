@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   preview:
-    if: ${{ false }}
+    if: ${{ true }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
