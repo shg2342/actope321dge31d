@@ -1,1 +1,2 @@
 restart 2026-09-28 18:05 KST
+restart: rename 본부별손익 2026-09-29
