@@ -3,3 +3,4 @@ restart: rename 본부별손익 2026-09-29
 restart: 본부별손익 평가툴 2026-09-29T14:25+09:00
 restart: 400-row profit simulation 2026-09-29
 restart: original NKP vs ABC comparison 2026-10-01
+restart: corrected original profit ABC analysis 2026-10-01
